@@ -161,7 +161,7 @@ ApplicationWindow {
                     TechButton {
                         text: "正视图"
                         width: 120
-                        onClicked: vtkView.zhengshitu()
+                        onClicked: vtkView.setFrontView()
                     }
 
                     // 放大按钮

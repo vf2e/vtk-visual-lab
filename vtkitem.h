@@ -51,7 +51,7 @@ public:
     bool m_initialized;
     vtkRenderer* m_renderer;
 
-    int m_shiTuType;
+    int m_viewType;
     double m_bounds[6];
     double m_center[3];
     double m_size[3];
@@ -69,11 +69,8 @@ public:
 public slots:
     void handleModelLoaded();
 
-
-
-
 public slots:
-    void zhengshitu();
+    void setFrontView();
 
     void setCamera();
 
@@ -97,6 +94,18 @@ private:
 
     void handleLeftButtonMove(QMouseEvent *event);
 
+    /**
+     * @brief 为模型的每个面片设置随机颜色
+     * @param polyData 模型数据
+     */
+    void setRandomColorsForFaces(vtkPolyData* polyData);
+
+    /**
+     * @brief 使用预定义颜色方案为面片着色（可选）
+     * @param polyData 模型数据
+     */
+    void setPredefinedColorsForFaces(vtkPolyData* polyData);
+
 };
 
-#endif // VTKITEM_H
+#endif

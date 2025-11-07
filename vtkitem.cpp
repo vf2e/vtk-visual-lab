@@ -32,6 +32,15 @@
 #include <vtkFloatArray.h>
 #include <vtkTransformPolyDataFilter.h>
 
+#include <vtkUnsignedCharArray.h>
+#include <vtkCellData.h>
+#include <cstdlib>
+#include <ctime>
+#include <vector>
+
+#include <QMouseEvent>
+#include <QElapsedTimer>
+
 /**
  * @class VTKRenderer2
  * @brief 自定义渲染器类，继承自QQuickFramebufferObject::Renderer
@@ -94,7 +103,7 @@ VTKItem::VTKItem(QQuickItem *parent)
     , m_renderWindow(nullptr)
     , m_initialized(false)
     , m_renderer(nullptr)
-    , m_shiTuType(0)
+    , m_viewType(0)
     , m_bounds()
     , m_center()
     , m_size()
@@ -295,10 +304,10 @@ void VTKItem::componentComplete()
 /**
  * @brief 切换到正视图
  */
-void VTKItem::zhengshitu()
+void VTKItem::setFrontView()
 {
     qDebug() << "[VTKItem] 切换到正视图";
-    m_shiTuType = 0;  // 设置视图类型为正视图
+    m_viewType = 0;  // 设置视图类型为正视图
     setCamera();      // 更新相机位置
     update();         // 触发界面更新
     qDebug() << "[VTKItem] 正视图切换完成";
@@ -308,7 +317,7 @@ void VTKItem::zhengshitu()
  * @brief 根据当前视图类型设置相机参数
  */
 void VTKItem::setCamera() {
-    qDebug() << "[VTKItem] 开始设置相机参数，当前视图类型:" << m_shiTuType;
+    qDebug() << "[VTKItem] 开始设置相机参数，当前视图类型:" << m_viewType;
 
     // 获取当前激活的相机
     vtkCamera* camera = m_renderer->GetActiveCamera();
@@ -316,7 +325,7 @@ void VTKItem::setCamera() {
     qDebug() << "[VTKItem] 相机视角已设置为45度";
 
     // 根据视图类型设置相机参数
-    switch(m_shiTuType) {
+    switch(m_viewType) {
     case 0: // 正视图 (Front View)
         qDebug() << "[相机设置] 配置正视图";
         camera->SetPosition(m_center[0], m_center[1] + m_size[1] * 2, m_center[2]);
@@ -354,7 +363,7 @@ void VTKItem::setCamera() {
         break;
 
     default:
-        qWarning() << "[相机设置] 未知视图类型:" << m_shiTuType << "使用默认正视图";
+        qWarning() << "[相机设置] 未知视图类型:" << m_viewType << "使用默认正视图";
         camera->SetPosition(m_center[0], m_center[1] + m_size[1] * 2, m_center[2]);
         camera->SetFocalPoint(m_center[0], m_center[1], m_center[2]);
         camera->SetViewUp(0, 0, 1);
@@ -458,11 +467,18 @@ void VTKItem::handleModelLoaded()
     m_size[0] = size[0]; m_size[1] = size[1]; m_size[2] = size[2];
     qDebug() << "[模型加载] 几何信息保存完成";
 
+    qDebug() << "[模型加载] 开始为每个面片设置随机颜色";
+
+    // 为每个面片设置随机颜色
+    setPredefinedColorsForFaces(polyData);
+
     qDebug() << "[模型加载] 开始创建可视化管线";
     // 创建mapper和actor
     m_mapper = vtkPolyDataMapper::New();
     m_mapper->SetInputData(polyData);
-    qDebug() << "[可视化] Mapper创建完成";
+    m_mapper->SetScalarModeToUseCellData(); // 使用单元数据作为标量
+    m_mapper->SetScalarVisibility(true);    // 启用标量颜色映射
+    qDebug() << "[可视化] Mapper创建完成，已启用单元颜色映射";
 
     m_actor = vtkActor::New();
     m_actor->SetMapper(m_mapper);
@@ -471,10 +487,11 @@ void VTKItem::handleModelLoaded()
 
     // 设置actor视觉属性
     qDebug() << "[可视化] 设置Actor材质属性";
-    m_actor->GetProperty()->SetColor(0.8, 0.5, 0.3);  // 设置颜色（肤色）
+    // 注意：这里不再设置整体颜色，因为使用面片颜色
     m_actor->GetProperty()->SetOpacity(0.8);          // 设置透明度
     m_actor->GetProperty()->SetSpecular(0.5);         // 设置镜面反射强度
     m_actor->GetProperty()->SetSpecularPower(30);     // 设置镜面反射指数
+    m_actor->GetProperty()->SetInterpolationToFlat(); // 设置为平面着色，显示面片边界
     qDebug() << "[可视化] Actor材质属性设置完成";
 
     // 获取并记录actor的初始位置
@@ -492,10 +509,117 @@ void VTKItem::handleModelLoaded()
     qDebug() << "[界面] 更新信号已发出";
 
     // 切换到正视图
-    zhengshitu();
+    setFrontView();
     qDebug() << "[视图] 已切换到正视图";
 
     qDebug() << "[模型加载] 模型加载处理全部完成";
+}
+
+/**
+ * @brief 为模型的每个面片设置随机颜色
+ * @param polyData 模型数据
+ */
+void VTKItem::setRandomColorsForFaces(vtkPolyData* polyData)
+{
+    if (!polyData) {
+        qDebug() << "[颜色设置] 模型数据为空，无法设置颜色";
+        return;
+    }
+
+    // 获取面片数量
+    vtkIdType numCells = polyData->GetNumberOfCells();
+    qDebug() << "[颜色设置] 开始为" << numCells << "个面片设置随机颜色";
+
+    if (numCells == 0) {
+        qDebug() << "[颜色设置] 模型没有面片，无法设置颜色";
+        return;
+    }
+
+    // 创建颜色数组 - 使用传统方式创建
+    vtkUnsignedCharArray* colors = vtkUnsignedCharArray::New();
+    colors->SetName("FaceColors");
+    colors->SetNumberOfComponents(3); // RGB
+    colors->SetNumberOfTuples(numCells);
+
+    // 设置随机种子
+    std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
+    // 为每个面片生成随机颜色
+    for (vtkIdType i = 0; i < numCells; i++) {
+        // 生成随机RGB颜色
+        unsigned char r = static_cast<unsigned char>(std::rand() % 256);
+        unsigned char g = static_cast<unsigned char>(std::rand() % 256);
+        unsigned char b = static_cast<unsigned char>(std::rand() % 256);
+
+        // 设置颜色
+        colors->SetTuple3(i, r, g, b);
+
+        // 每1000个面片输出一次进度
+        if (i % 1000 == 0 && i > 0) {
+            qDebug() << "[颜色设置] 已处理" << i << "/" << numCells << "个面片";
+        }
+    }
+
+    qDebug() << "[颜色设置] 随机颜色生成完成";
+
+    // 将颜色数组添加到面片数据中
+    polyData->GetCellData()->SetScalars(colors);
+
+    // 释放颜色数组（引用计数减1，VTK会管理剩余的生命周期）
+    colors->Delete();
+
+    qDebug() << "[颜色设置] 颜色数据已添加到模型";
+}
+
+/**
+ * @brief 使用预定义颜色方案为面片着色（可选）
+ * @param polyData 模型数据
+ */
+void VTKItem::setPredefinedColorsForFaces(vtkPolyData* polyData)
+{
+    if (!polyData) {
+        return;
+    }
+
+    vtkIdType numCells = polyData->GetNumberOfCells();
+    qDebug() << "[预定义颜色] 开始为" << numCells << "个面片设置预定义颜色";
+
+    // 创建颜色数组 - 使用传统方式创建
+    vtkUnsignedCharArray* colors = vtkUnsignedCharArray::New();
+    colors->SetName("FaceColors");
+    colors->SetNumberOfComponents(3);
+    colors->SetNumberOfTuples(numCells);
+
+    // 预定义的颜色方案
+    std::vector<std::vector<unsigned char>> colorSchemes = {
+        {255, 0, 0},     // 红色
+        {0, 255, 0},     // 绿色
+        {0, 0, 255},     // 蓝色
+        {255, 255, 0},   // 黄色
+        {255, 0, 255},   // 洋红色
+        {0, 255, 255},   // 青色
+        {255, 165, 0},   // 橙色
+        {128, 0, 128},   // 紫色
+        {165, 42, 42},   // 棕色
+        {0, 128, 0}      // 深绿色
+    };
+
+    // 为每个面片分配颜色
+    for (vtkIdType i = 0; i < numCells; i++) {
+        int colorIndex = i % static_cast<int>(colorSchemes.size()); // 修复类型转换警告
+        colors->SetTuple3(i,
+                          colorSchemes[colorIndex][0],
+                          colorSchemes[colorIndex][1],
+                          colorSchemes[colorIndex][2]);
+    }
+
+    // 将颜色数组添加到面片数据中
+    polyData->GetCellData()->SetScalars(colors);
+
+    // 释放颜色数组
+    colors->Delete();
+
+    qDebug() << "[预定义颜色] 预定义颜色设置完成";
 }
 
 /**
@@ -612,27 +736,28 @@ void VTKItem::setupInteractor()
  */
 void VTKItem::mouseMoveEvent(QMouseEvent *event)
 {
-    qDebug() << "[鼠标事件] 鼠标移动，新位置: (" << event->pos().x() << "," << event->pos().y() << ")";
-
-    if (!m_mouseEnabled || !m_initialized) {
-        qDebug() << "[鼠标事件] 鼠标交互未启用或VTK未初始化，忽略事件";
+    // 移除所有调试输出，减少性能开销
+    if (!m_mouseEnabled || !m_initialized || !m_isRotating) {
         event->ignore();
         return;
     }
 
-    // 计算鼠标移动增量
-    QPoint delta = event->pos() - m_lastMousePos;
-    qDebug() << "[鼠标事件] 鼠标移动增量: (" << delta.x() << "," << delta.y() << ")";
+    // 关键修复：限制事件频率
+    static QElapsedTimer moveTimer;
+    if (moveTimer.isValid() && moveTimer.elapsed() < 16) { // 约60fps
+        m_lastMousePos = event->pos();
+        event->accept();
+        return;
+    }
+    moveTimer.start();
 
-    // 处理左键拖动（旋转）
+    // 处理左键拖动
     if (event->buttons() & Qt::LeftButton) {
         handleLeftButtonMove(event);
     }
 
-    // 更新最后鼠标位置
     m_lastMousePos = event->pos();
-    event->accept(); // 接受事件处理
-    qDebug() << "[鼠标事件] 鼠标移动事件处理完成";
+    event->accept();
 }
 
 /**
